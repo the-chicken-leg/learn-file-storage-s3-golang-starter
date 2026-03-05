@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -17,7 +20,7 @@ import (
 )
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
-// check if video db entry exists
+	// check if video db entry exists
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
@@ -79,12 +82,17 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	tempFile.Seek(0, io.SeekStart)
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error calculating aspect ratio", err)
+		return
+	}
 
 	// upload to S3
 	rando := make([]byte, 32)
 	_, _ = rand.Read(rando)
 	fileStem := base64.RawURLEncoding.EncodeToString(rando)
-	fileName := fileStem + "." + strings.Split(mediatype, "/")[1]
+	fileName := aspectRatio + "/" + fileStem + "." + strings.Split(mediatype, "/")[1]
 	_, err = cfg.s3Client.PutObject(
 		r.Context(),
 		&s3.PutObjectInput{
@@ -110,4 +118,40 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	// success
 	fmt.Println("uploading video", videoID, "by user", userID)
 	respondWithJSON(w, http.StatusOK, dbVideo)
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	type widthHeightOut struct {
+		Streams []struct {
+			Width              int    `json:"width"`
+			Height             int    `json:"height"`
+		}
+	}
+	
+	ffprobeCmd := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-print_format", "json",
+		"-show_streams", filePath,
+	)
+	var buf bytes.Buffer
+	ffprobeCmd.Stdout = &buf
+	if err := ffprobeCmd.Run(); err != nil {
+		return "", fmt.Errorf("ffprobe command unsuccessful: %v", err)
+	}
+
+	var ffprobeOut widthHeightOut
+	if err := json.Unmarshal(buf.Bytes(), &ffprobeOut); err != nil {
+		return "", fmt.Errorf("Could not unmarshal JSON to struct: %v", err)
+	}
+
+	aspectRatio := ffprobeOut.Streams[0].Width / ffprobeOut.Streams[0].Height
+	switch aspectRatio {
+	case 1:
+		return "landscape", nil
+	case 0:
+		return "portrait", nil
+	default:
+		return "other", nil
+	}
 }
