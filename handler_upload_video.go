@@ -72,7 +72,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	// save temp video to filesystem
 	tempFile, err := os.CreateTemp("", "tubely-upload-*.mp4")
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Could not create temp video file", err)
+		respondWithError(w, http.StatusInternalServerError, "Could not create temp video file", err)
 		return
 	}
 	defer os.Remove(tempFile.Name())
@@ -88,6 +88,20 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// process video for fast start
+	outputPath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error processing video for fast start", err)
+		return
+	}
+	tempFileProcessed ,err := os.Open(outputPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not open processed temp file", err)
+		return
+	}
+	defer os.Remove(tempFileProcessed.Name())
+	defer tempFileProcessed.Close()
+
 	// upload to S3
 	rando := make([]byte, 32)
 	_, _ = rand.Read(rando)
@@ -98,7 +112,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		&s3.PutObjectInput{
 			Bucket: &cfg.s3Bucket,
 			Key: &fileName,
-			Body: tempFile,
+			Body: tempFileProcessed,
 			ContentType: &mediatype,
 		},
 	)
@@ -154,4 +168,20 @@ func getVideoAspectRatio(filePath string) (string, error) {
 	default:
 		return "other", nil
 	}
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outputPath := filePath + ".processing"
+	ffmpegCmd := exec.Command(
+		"ffmpeg",
+		"-i", filePath,
+		"-c", "copy",
+		"-movflags", "faststart",
+		"-f", "mp4",
+		outputPath,
+	)
+	if err := ffmpegCmd.Run(); err != nil {
+		return "", fmt.Errorf("ffmpeg command unsuccessful: %v", err)
+	}
+	return outputPath, nil
 }
