@@ -86,7 +86,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	// update thumbnail URL in db
 	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, fileName)
 	dbVideo.ThumbnailURL = &thumbnailURL
-	if cfg.db.UpdateVideo(dbVideo); err != nil {
+	if err = cfg.db.UpdateVideo(dbVideo); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not update thumbnail URL in db", err)
 		return
 	}
